@@ -1,0 +1,15 @@
+# Local recordings, diagnostics and credentials do not belong in this repository.
+*.log
+*.sav
+*.dmp
+*.mp4
+*.mkv
+*.wav
+*.pem
+*.key
+.env
+.env.*
+__pycache__/
+.venv/
+tmp/
+recordings/

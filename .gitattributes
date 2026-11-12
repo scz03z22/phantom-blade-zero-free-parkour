@@ -1,0 +1,3 @@
+# Preserve published source bytes and line endings for release comparison.
+* -text
+*.zip binary
