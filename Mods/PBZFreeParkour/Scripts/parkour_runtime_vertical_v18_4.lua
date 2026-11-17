@@ -28,6 +28,16 @@ function M.new(H,log,shared)
  local last_probe,last_seen=0,nil
  -- The host rebuilds Sessions after each native action and reloads modules on
  -- F8. Keep the one-action-per-flight latch with the shared primitive state.
+ -- perf4: the hold probes of one update() read the same world in the same tick, so they
+ -- share one spline-wall ignore list. It is dropped before update() returns; no list or
+ -- actor reference survives a tick. Contents and use of the list are unchanged.
+ local tick_ignore=nil
+ local function spline_ignore(s)
+  if tick_ignore and tick_ignore.sample==s then return tick_ignore.list end
+  local list,why=engine.build_spline_ignore_list(s)
+  if list then tick_ignore={sample=s,list=list} end
+  return list,why
+ end
  local function observe_flight(s)
   if shared.air_player~=s.player_id or shared.air_world~=s.world_id then
    shared.air_player,shared.air_world=s.player_id,s.world_id
@@ -190,7 +200,7 @@ function M.new(H,log,shared)
   local p=H.GetPlayer();assert(valid(p),'player unavailable')
   local mesh,cap=p.Mesh,p.CapsuleComponent;assert(valid(mesh) and valid(cap),'mesh/capsule unavailable')
   local names={'calf_l','calf_r'};local sys=H.GetKismetSystemLibrary()
-  local ignored,why=engine.build_spline_ignore_list(s);assert(ignored,why or 'ignore unavailable')
+  local ignored,why=spline_ignore(s);assert(ignored,why or 'ignore unavailable')
   local length=math.max(80,math.min(200,cap:GetScaledCapsuleHalfHeight()*1.45))
   local results={};local supported=false;local unknown=false
   local tip_results={};local tip_supported=false;local tip_unknown=false
@@ -296,7 +306,7 @@ function M.new(H,log,shared)
    assert(count==1,'mantle component not unique')
    local max_front=reactor.TraversalConfig.MaxFrontHeight
    assert(type(max_front)=='number' and max_front==max_front and max_front>0 and max_front<=250,'mantle height unavailable')
-   local ignored=assert(engine.build_spline_ignore_list(s),'wall filter unavailable')
+   local ignored=assert(spline_ignore(s),'wall filter unavailable')
    local profile=cap:GetCollisionProfileName();local profile_name=profile:ToString():lower()
    assert(profile_name~='' and profile_name~='none' and profile_name~='custom','profile unavailable')
    local sys=H.GetKismetSystemLibrary()
@@ -331,7 +341,7 @@ function M.new(H,log,shared)
  end
  local function reached_edge(s,r)
   local p=H.GetPlayer();if not valid(p) then return 'player_lost' end
-  local ignored,why=engine.build_spline_ignore_list(s)
+  local ignored,why=spline_ignore(s)
   if not ignored then log('v16_1_hold_edge_ignore_unavailable='..tostring(why));return 'edge_ignore_unavailable' end
   local q=s.ground.pos;local cap=p.CapsuleComponent
   local half,radius=cap:GetScaledCapsuleHalfHeight(),cap:GetScaledCapsuleRadius()
@@ -667,7 +677,16 @@ function M.new(H,log,shared)
   ..' ordinary_specs='..tostring(ok and available and asm and asm.ordinary_spec_count)
   ..' error='..tostring(ok and asm and asm.error or (not ok and available or 'none')))
  log('v10_runtime_loaded version='..cfg.version..' hold_enabled='..tostring(cfg.hold_enabled)..' apex_exit='..tostring(cfg.apex_exit_enabled))
- return {sample=engine.sample,update=update,start_action=start_action,busy=function() return run~=nil end,
-  stop=request_stop,label=function() return cfg.version..'; hold='..tostring(cfg.hold_enabled)..'; apex='..tostring(cfg.apex_exit_enabled) end}
+ local function update_tick(...)
+  tick_ignore=nil
+  local ok,err=pcall(update,...)
+  tick_ignore=nil
+  if not ok then error(err,0) end
+ end
+ log('perf4_hold_ignore=shared_per_tick')
+ log('candidate5_keepalive=enabled; rev=2; after any verified load of the hold-run class')
+ return {sample=engine.sample,update=update_tick,start_action=start_action,busy=function() return run~=nil end,
+  stop=request_stop,label=function() return cfg.version..'; hold='..tostring(cfg.hold_enabled)..'; apex='..tostring(cfg.apex_exit_enabled) end,
+  warm_long_pool=function() if run then return false,'action active' end;return chain.warm_pool() end}
 end
 return M

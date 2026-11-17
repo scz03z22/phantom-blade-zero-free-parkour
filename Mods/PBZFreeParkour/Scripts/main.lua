@@ -1,7 +1,8 @@
--- Research host: exactly one game-thread loop; F8 enables/disables, double
--- Space is handled by the independent v10 session. No engine work in timers.
+-- Lite: automatically enables after a valid player/input baseline.
+-- Double jump uses keyboard Space or the gamepad jump button. No toggle keys.
 local scripts=assert(debug.getinfo(1,'S').source:match('^@(.+[\\/])[^\\/]+$'),'script directory unavailable')
-local H=require('UEHelpers')
+local base_helpers=require('UEHelpers')
+local H=base_helpers
 local enabled=false
 local runtime,session,frame,prior_ground=nil,nil,nil,nil
 local identity,last_time,ready_after=nil,nil,nil
@@ -10,35 +11,20 @@ local persistent_state={} -- primitive Lua data only; shared across reloads
 local suspended=nil
 local faulted=false
 local fault_identity,fault_time,fault_drain_failures,fault_drain_blocked=nil,nil,0,false
+local fault_recoveries,fault_probe_ticks=0,0
+local FAULT_RECOVERY_LIMIT=3
 local function log(msg) print('[PBZ-PARKOUR] '..tostring(msg)..'\n') end
+local jump_input=assert(loadfile(scripts..'parkour_input.lua'))().new(log)
 local function status(msg) end
-local function valid(o) local ok,v=pcall(function() return o and o:IsValid() end);return ok and v end
-local pending_f8=false
-
--- Release-only key configuration. Invalid settings retain the default key.
-local pbz_toggle_name = 'F8'
-local pbz_key_ok, pbz_key_error = pcall(function()
- local source = debug.getinfo(1,'S').source
- local directory = assert(source:match('^@(.+[\\/])[^\\/]+$'),'script directory unavailable')
- local settings = assert(loadfile(directory..'keybindings.lua'))()
- assert(type(settings)=='table' and type(settings.toggle)=='string','toggle must be a key name')
- local name = settings.toggle:upper()
- local number = tonumber(name:match('^F(%d+)$'))
- assert(number and number>=1 and number<=12 and name=='F'..number,'supported keys: F1 to F12')
- assert(type(Key[name])=='number','key is unavailable in this UE4SS build')
- pbz_toggle_name = name
-end)
-if not pbz_key_ok then log('keybindings invalid or missing; using F8: '..tostring(pbz_key_error)) end
-local pbz_toggle_key = Key[pbz_toggle_name]
-log('toggle_key='..pbz_toggle_name..'; changes require a game restart')
-
-RegisterKeyBind(pbz_toggle_key,function() ExecuteInGameThread(function() if valid(H.GetPlayer()) then pending_f8=true end end) end)
-local function notice(message)
- local ok,err=pcall(function()
-  local p=H.GetPlayer();if valid(p) then H.GetKismetSystemLibrary():PrintString(p,message,true,false,{R=.3,G=1,B=.6,A=1},4,FName('PBZJumpLabMode')) end
- end)
- if not ok then log('notification_error='..tostring(err)) end
+-- perf4: private facade. Falls back to the shared helper if it cannot be built.
+local begin_scope,end_scope=function() end,function() end
+do
+ local ok,fast=pcall(function() return assert(loadfile(scripts..'pbz_fast_helpers.lua'))().new(base_helpers,log) end)
+ if ok and type(fast)=='table' then H=fast;begin_scope,end_scope=fast.begin_scope,fast.end_scope
+ else log('fast_player_lookup unavailable='..tostring(fast)) end
 end
+local host_ticks=0
+local function valid(o) local ok,v=pcall(function() return o and o:IsValid() end);return ok and v end
 local function stop_session()
  local old=session;session=nil;frame=nil;prior_ground=nil
  if old then pcall(old.stop) end
@@ -81,26 +67,19 @@ local function suspend(reason)
  previous_arm,previous_space,input_ready=false,false,false
  if suspended~=reason then log('suspended='..reason);suspended=reason end
 end
-local feedback=nil
-local function play_feedback(kind,p)
- local ok,err=pcall(function()
-  if not feedback then feedback=assert(loadfile(scripts..'toggle_feedback_v1.lua'))().new(H,log) end
-  feedback.play(kind,p)
- end)
- if not ok then log('toggle_feedback_error='..tostring(err)) end
-end
 local function check_session(event)
  if session and session.active() then return true end
  if event=='unavailable' then suspend('session_unavailable') else fault('session_'..tostring(event)) end
  return false
 end
 local function tick()
+ begin_scope()
  local ok,err=pcall(function()
   local p=H.GetPlayer();if not valid(p) then suspend('player_unavailable');return end
   local input=p:GetController();if not valid(input) then suspend('controller_unavailable');return end
-  local space_down=not not input:IsInputKeyDown({KeyName=FName('SpaceBar')})
-  local arm_edge=input_ready and pending_f8
-  pending_f8=false
+  -- Keep the legacy space_down field name; it now means logical jump on either device.
+  local space_down=jump_input.jump_down(input)
+  local arm_edge=input_ready and not enabled and not faulted
   local space_edge=input_ready and space_down and not previous_space
   previous_arm,previous_space,input_ready=false,space_down,true
   if faulted then
@@ -126,11 +105,21 @@ local function tick()
    if fault_drain_blocked then status('v10 disabled: cleanup unconfirmed; restart game required');return end
    local check_ok,still_busy=pcall(function() return runtime and runtime.busy() end)
    if not check_ok then status('v10 disabled: cleanup unconfirmed; restart game required');fault_drain_blocked=true;return end
-   if not arm_edge then return end
-   if still_busy then status('v10 disabled: fault cleanup pending; F8 cannot enable');return end
-   local success,new_modules=reload();assert(success);modules=new_modules;faulted=false
+   -- candidate5: the keyed edition leaves a fault when the user presses its toggle and
+   -- nothing is busy. This edition has no key, so the same step is taken by itself, but
+   -- only after the player or world identity differs from the one that faulted (travel,
+   -- respawn), only when no action is still owned, and at most three times per session.
+   -- Identity is read once per 30 host ticks while faulted; nothing else is added.
+   if still_busy or fault_recoveries>=FAULT_RECOVERY_LIMIT or type(fault_identity)~='string' then return end
+   fault_probe_ticks=fault_probe_ticks+1
+   if fault_probe_ticks%30~=0 then return end
+   local id_ok,current_id=pcall(function() return p:GetFullName()..'|'..H.GetWorld():GetFullName() end)
+   if not id_ok or type(current_id)~='string' or current_id==fault_identity then return end
+   fault_recoveries=fault_recoveries+1;faulted=false
+   fault_identity,fault_time,fault_drain_failures=nil,nil,0
    identity,last_time,ready_after=nil,nil,nil
-   status('v10 disabled; recovered; F8 to enable');return
+   log('fault_recovered count='..fault_recoveries..' of '..FAULT_RECOVERY_LIMIT..'; reason=identity_changed; enabling again as at startup')
+   return
   end
   if not runtime then
    -- Disabled fault recovery may prepare a fresh read-only runtime. A held key
@@ -162,18 +151,10 @@ local function tick()
   end
   identity,last_time=current_identity,current.time;suspended=nil
   if arm_edge then
-   if enabled then
-    enabled=false;stop_session();stop_runtime('disabled')
-    status('v10 disabled; action finishing if necessary; F8 to enable');log('toggle=disabled');play_feedback('disabled',p)
-   else
-    if runtime.busy() then
-     status('v10 disabled; previous action finishing');log('enable_refused=finishing');notice('Parkour: previous action finishing')
-    else
-     local success,new_modules=reload();assert(success)
-     modules=new_modules;enabled=true
-     status('v10 enabled; '..tostring(runtime.label())..'; F8 to disable');log('toggle=enabled label='..tostring(runtime.label()))
-     play_feedback('enabled',p)
-    end
+   if not runtime.busy() then
+    local success,new_modules=reload();assert(success)
+    modules=new_modules;enabled=true
+    log('lite_auto_enabled label='..tostring(runtime.label()))
    end
    space_edge=false
   end
@@ -191,11 +172,20 @@ local function tick()
    if result=='queued' then event=session.update();check_session(event) end
   end
  end)
+ end_scope()
+ host_ticks=host_ticks+1
+ if host_ticks%9000==0 and H.fast_lookup_state then
+  local f=H.fast_lookup_state()
+  log(string.format('perf4_lookup ticks=%d mode=%s resolves=%d memo=%d fast=%d enumerations=%d verifications=%d fallbacks=%d',
+   host_ticks,f.mode,f.resolves,f.memo_hits,f.fast_used,f.base_calls,f.verifications,f.fallbacks))
+ end
  if not ok then fault('tick_error='..tostring(err)) end
 end
 local initial_ok,initial=pcall(make_runtime)
 if initial_ok then runtime=initial else log('initial_runtime_error='..tostring(initial)) end
 assert(type(LoopInGameThreadWithDelay)=='function','game-thread loop unavailable')
 local handle=LoopInGameThreadWithDelay(30,tick);assert(handle,'unable to install game-thread loop')
-status('v10 loaded; disabled; F8 to enable')
-log('v10 loaded; configured persistent toggle; double Space; loop_handle='..tostring(handle))
+
+log('fault_recovery=after_identity_change; limit='..FAULT_RECOVERY_LIMIT..' per session')
+log('pad1_input_loaded; jump='..jump_input.describe()..'; auto_enable; no_toggle_keys')
+log('lite_v0.1.0_loaded; auto_enable_on_player; no_hotkeys; perf4_fast_lookup='..tostring(H~=base_helpers)..'; loop_handle='..tostring(handle))

@@ -2,8 +2,10 @@
 -- v14 contact-only UE-facing short-action adapter. Native pose selection remains observed, not assumed. Call on game thread only.
 -- No movement correction, key registration, timer, or asynchronous work here.
 local M = {}
+local scripts=assert(debug.getinfo(1,'S').source:match('^@(.+[\\/])[^\\/]+$'),'script directory unavailable')
 function M.new(H, log, selector, shared, options)
   shared=shared or {}; options=options or {}
+  local jump_input=assert(loadfile(scripts..'parkour_input.lua'))().new(log)
   local color={R=0,G=0,B=0,A=0}
   -- Store only identity strings and simple Lua flags, never UObject handles.
   -- Engine instance must live across F8 toggles to preserve this bounded pool.
@@ -17,6 +19,7 @@ function M.new(H, log, selector, shared, options)
   local contact_activity_until=nil
   local idle_query_reported=false
   pcall(log,'idle_query_perf_20261112 loaded; airborne/input queries unchanged')
+  pcall(log,'perf4_ground_move_scan=off; Space, airborne and the 2 s buffer still query')
   local read_errors={}
   local seen_profiles={}
   local function read_error_once(source,reason)
@@ -137,8 +140,8 @@ function M.new(H, log, selector, shared, options)
     end
     return best,query_source,profile_name
   end
-  -- v6 deliberately uses physical WASD key state; it does not infer intent
-  -- from a potentially stale movement vector. Gamepad input is not covered.
+  -- WASD is diagnostic only; contact/action eligibility uses the actor's facing
+  -- and physical wall queries, so left-stick movement needs no extra key gate.
   local function keyboard_input(p)
     local ok,dir,source=pcall(function()
       local controller=p:GetController()
@@ -172,12 +175,11 @@ function M.new(H, log, selector, shared, options)
       dx=q.X-previous_sample.pos.X;dy=q.Y-previous_sample.pos.Y;dz=q.Z-previous_sample.pos.Z
       dt=now-previous_sample.time
     end
-    -- Read the existing physical key state only for diagnostics; no new bind,
-    -- timer or action is installed. First sample/context change is a baseline.
+    -- Use the same logical jump as the host, including for grounded query wake-up.
+    -- No new bind/timer. First sample/context change is still a baseline.
     local key_ok,space_down=pcall(function()
       local controller=p:GetController();assert(valid(controller),'controller unavailable')
-      local down=controller:IsInputKeyDown({KeyName=FName('SpaceBar')})
-      assert(type(down)=='boolean','SpaceBar state unreadable');return down
+      return jump_input.jump_down(controller)
     end)
     -- Grounded, stationary, key-up idle has no pending airborne interaction.
     -- Never reuse a cached hit. A key/movement/airborne sample queries immediately;
@@ -188,9 +190,11 @@ function M.new(H, log, selector, shared, options)
     if not continuous or not contact_activity_until or (previous_sample and now<previous_sample.time) then
       contact_activity_until=number(now) and now+2 or nil
     end
+    -- perf4: walking or being moved on the ground no longer counts as activity.
+    -- Contact is only consumed on a tick with Space down, in the air, or while the
+    -- two-edge gate is pending (at most .40 s after a Space edge on the ground);
+    -- all three are inside the conditions below or the 2 s buffer they start.
     local active=not idle_known or mode~=1 or space_down==true
-      or (velocity.X^2+velocity.Y^2+velocity.Z^2)>1
-      or movement.X~=0 or movement.Y~=0
     if active and number(now) then contact_activity_until=now+2 end
     local should_query=active or not contact_activity_until or now<=contact_activity_until
     local wall,query_source,actual_profile=nil,'grounded_idle_no_query',nil
@@ -200,13 +204,13 @@ function M.new(H, log, selector, shared, options)
     end
     local contact=wall~=nil
     local key_edge=key_ok and continuous and previous_space==false and space_down==true
-    if not key_ok then read_error_once('SpaceBar',space_down);previous_space=nil
+    if not key_ok then read_error_once('jump_input',space_down);previous_space=nil
     else previous_space=space_down end
     previous_sample=number(now) and vector(q) and {time=now,player_id=pid,world_id=wid,pos={X=q.X,Y=q.Y,Z=q.Z}} or nil
     if key_edge then
       local function value(v) return number(v) and string.format('%.4f',v) or 'unknown' end
       local n=wall and wall.normal or {};local d=wall and wall.query_direction or {}
-      pcall(log,'v12_contact_key source=SpaceBar_rising query='..tostring(query_source)..' onhit=false'
+      pcall(log,'v12_contact_key source=jump_rising query='..tostring(query_source)..' onhit=false'
         ..' actual_profile='..tostring(actual_profile)..' contact_evidence='..tostring(wall and wall.contact_evidence)
         ..' time='..value(now)..' mode='..tostring(p.CharacterMovement.MovementMode)..' contact='..tostring(contact)
         ..' pos='..value(q.X)..','..value(q.Y)..','..value(q.Z)
@@ -267,10 +271,32 @@ function M.new(H, log, selector, shared, options)
     if not read_ok then return false,'cannot inspect current special-move volume' end
     local current_name=valid(current_volume) and current_volume:GetFullName() or nil
     local context_id=world:GetFullName()..'|'..p:GetFullName()
-    if context~=context_id then pool={};context=context_id;persist() end
+    if context~=context_id then pool={};context=context_id;shared.perf4_components=nil;persist() end
+    -- perf4: `available` is only ever read with pooled names. Resolve those by exact
+    -- path. If any is not found that way, enumerate the class exactly as before; a
+    -- pooled actor that enumeration finds but the path missed turns the path form off.
     local available={}
-    for _,candidate in ipairs(FindAllOf('BP_SpecialMove_UpRunning_C') or {}) do
-      if valid(candidate) then available[candidate:GetFullName()]=candidate end
+    local direct=shared.perf4_actor_path_off~=true
+    if direct then
+      for _,pooled in ipairs(pool) do
+        local path=type(pooled.name)=='string' and pooled.name:match('^BP_SpecialMove_UpRunning_C (.+)$')
+        local found,o=false,nil
+        if path then found,o=pcall(StaticFindObject,path) end
+        if found and valid(o) and o:GetFullName()==pooled.name then available[pooled.name]=o else direct=false end
+      end
+    end
+    if not direct then
+      local by_path=available;available={}
+      for _,candidate in ipairs(FindAllOf('BP_SpecialMove_UpRunning_C') or {}) do
+        if valid(candidate) then available[candidate:GetFullName()]=candidate end
+      end
+      if shared.perf4_actor_path_off~=true then
+        for _,pooled in ipairs(pool) do
+          if available[pooled.name] and not by_path[pooled.name] then
+            shared.perf4_actor_path_off=true;log('perf4_short_lookup actor_path_off; using enumeration');break
+          end
+        end
+      end
     end
     local live={}
     for _,entry in ipairs(pool) do
@@ -287,7 +313,10 @@ function M.new(H, log, selector, shared, options)
     if not actor then
       if #pool>=2 then return false,'no unused temporary actor available' end
       local class=StaticFindObject('/Game/RenewalContent/Actors/SpecialMove/Volume/BP_SpecialMove_UpRunning.BP_SpecialMove_UpRunning_C')
-      assert(valid(class),'climb class unavailable')
+      -- Streaming/GC may remove this asset between the idle preload and input.
+      -- No actor has been spawned or native action dispatched yet: reject only
+      -- this attempt. The idle loader can prepare it after landing.
+      if not valid(class) then return false,'short_asset_not_ready' end
       actor=world:SpawnActor(class,{X=w.X,Y=w.Y,Z=floor+50000},target_rotation)
       assert(valid(actor),'spawn failed')
       entry={name=actor:GetFullName(),quarantined=false};pool[#pool+1]=entry;persist()
@@ -295,14 +324,47 @@ function M.new(H, log, selector, shared, options)
     end
     local ok,err=pcall(function()
       local box=nil;local name=actor:GetFullName()
-      for _,c in ipairs(FindAllOf('BoxComponent') or {}) do
-        if valid(c) then local owner=c:GetOwner();if valid(owner) and owner:GetFullName()==name and c:GetFullName():find('.BoxA',1,true) then box=c;break end end
+      -- perf4: the components of this mod-owned actor are remembered by exact full name
+      -- from the previous use of the same actor. Names only: every use resolves again
+      -- and re-checks name and owner. First use enumerates as before; the second use
+      -- enumerates and must agree with the record; later uses resolve by path. Any
+      -- disagreement turns this off for the session and the enumeration is used.
+      -- The widget pass after HandleOnInteract always enumerates, as before.
+      if type(shared.perf4_components)~='table' then shared.perf4_components={} end
+      local record=shared.perf4_components[name]
+      local trusted=shared.perf4_components_off==nil and type(record)=='table' and record.verified==true
+      local function owned(full)
+        local path=type(full)=='string' and full:match('^%S+ (.+)$');assert(path,'recorded name malformed')
+        local c=StaticFindObject(path);assert(valid(c) and c:GetFullName()==full,'recorded component not found')
+        local owner=c:GetOwner();assert(valid(owner) and owner:GetFullName()==name,'recorded component owner changed')
+        return c
+      end
+      local function distrust(why)
+        trusted=false;shared.perf4_components_off=tostring(why);log('perf4_short_lookup components_off reason='..tostring(why))
+      end
+      if trusted then
+        local found,c=pcall(owned,record.box)
+        if found and c:GetFullName():find('.BoxA',1,true) then box=c else distrust('box '..tostring(c)) end
+      end
+      if not box then
+        for _,c in ipairs(FindAllOf('BoxComponent') or {}) do
+          if valid(c) then local owner=c:GetOwner();if valid(owner) and owner:GetFullName()==name and c:GetFullName():find('.BoxA',1,true) then box=c;break end end
+        end
       end
       assert(valid(box),'interaction box unavailable')
       box:SetGenerateOverlapEvents(false);box:SetCollisionEnabled(0)
       assert(box:GetCollisionEnabled()==0,'interaction box still active')
-      for _,c in ipairs(FindAllOf('WidgetComponent') or {}) do
-        if valid(c) then local owner=c:GetOwner();if valid(owner) and owner:GetFullName()==name then c:SetVisibility(false,true) end end
+      local pre,pre_done={},false
+      if trusted then
+        local resolved={}
+        local found,why=pcall(function() for i,full in ipairs(record.widgets) do resolved[i]=owned(full) end end)
+        if found then for _,c in ipairs(resolved) do c:SetVisibility(false,true) end;pre_done=true
+        else distrust('widget '..tostring(why)) end
+      end
+      if not pre_done then
+        for _,c in ipairs(FindAllOf('WidgetComponent') or {}) do
+          if valid(c) then local owner=c:GetOwner();if valid(owner) and owner:GetFullName()==name then c:SetVisibility(false,true);pre[#pre+1]=c:GetFullName() end end
+        end
       end
       do -- move only after disabling the temporary actor's interaction box
         local out={}
@@ -334,16 +396,34 @@ function M.new(H, log, selector, shared, options)
       actor:HandleOnInteract(p)
       -- The game may re-show this temporary actor's interaction component.
       -- Restrict the override to UI owned by the newly spawned actor.
+      local post={}
       for _,c in ipairs(FindAllOf('WidgetComponent') or {}) do
         local uiok,uierr=pcall(function()
           if not valid(c) then return end
           local owner=c:GetOwner()
           if not valid(owner) or owner:GetFullName()~=name then return end
-          c:SetVisibility(false,true)
+          c:SetVisibility(false,true);post[#post+1]=c:GetFullName()
           local user=c:GetUserWidgetObject()
           if valid(user) then user:SetRenderOpacity(0);log('temporary_widget_opacity=0') end
         end)
         if not uiok then log('temporary_widget_error='..tostring(uierr)) end
+      end
+      if shared.perf4_components_off==nil then
+        local function same(a,b)
+          if type(a)~='table' or #a~=#b then return false end
+          for i=1,#a do if a[i]~=b[i] then return false end end
+          return true
+        end
+        local box_full=box:GetFullName()
+        if not trusted and type(record)=='table' then
+          if record.box==box_full and same(record.widgets,pre) then
+            record.verified=true;log('perf4_short_lookup verified widgets='..#pre..' actor='..name)
+          else distrust('second use of the actor differs from the first') end
+        end
+        if shared.perf4_components_off==nil then
+          if type(record)~='table' then record={verified=false} end
+          record.box=box_full;record.widgets=post;shared.perf4_components[name]=record
+        end
       end
     end)
     if not ok then

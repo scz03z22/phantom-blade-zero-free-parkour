@@ -245,7 +245,30 @@ function M.new(H,log,state)
  local function all(class)
   local objects=FindAllOf(class);assert(type(objects)=='table',class..' enumeration unavailable');return objects
  end
+ -- perf4: an owned volume is addressed by its exact object path. Nothing is cached:
+ -- every call resolves again and checks validity and the full name. A path that
+ -- fails once is never tried again (a failed lookup is expensive); that volume is
+ -- then found by the original class enumeration. Only the name is remembered.
+ local function actor_by_path(id)
+  local unusable=state.perf4_path_unusable
+  if type(unusable)=='table' and unusable[id] then return nil end
+  local path=type(id)=='string' and id:match('^BP_ASM_UpRunning_C (.+)$')
+  if path then
+   local ok,a=pcall(StaticFindObject,path)
+   if ok and valid(a) then
+    local same,n=pcall(name,a)
+    if same and n==id then
+     if not state.perf4_path_logged then state.perf4_path_logged=true;emit('perf4_owned_lookup by_path active') end
+     return a
+    end
+   end
+  end
+  if type(unusable)~='table' then unusable={};state.perf4_path_unusable=unusable end
+  unusable[id]=true;emit('perf4_owned_lookup path_unusable volume='..tostring(id)..'; using enumeration')
+  return nil
+ end
  local function actor_named(id)
+  local direct=actor_by_path(id);if direct then return direct end
   for _,a in ipairs(all('BP_ASM_UpRunning_C')) do if valid(a) and name(a)==id then return a end end
  end
  -- Only owned UI is changed. No global WidgetComponent enumeration and no
@@ -276,8 +299,16 @@ function M.new(H,log,state)
   end
   -- Mark before enumeration so reflection failure cannot cause 30Hz retries.
   ui_last_refresh=current.time
-  local ok,actors=pcall(all,'BP_ASM_UpRunning_C')
-  if not ok then ui_error('actor_enum',actors);return false,tostring(actors) end
+  local actors,direct={},true
+  for _,e in ipairs(state.pool) do
+   local a=actor_by_path(e.volume)
+   if a then actors[#actors+1]=a else direct=false end
+  end
+  if not direct then
+   local ok,found=pcall(all,'BP_ASM_UpRunning_C')
+   if not ok then ui_error('actor_enum',found);return false,tostring(found) end
+   actors=found
+  end
   local report={applied=0,enumerated=true}
   for _,actor in ipairs(actors) do
    local matched,id=pcall(function() return name(actor) end)
@@ -315,6 +346,7 @@ function M.new(H,log,state)
   end
   if state.world~=s.world_id or state.player~=s.player_id then
    state.pool={};state.world=s.world_id;state.player=s.player_id;state.volume=nil;state.phase=nil
+   state.perf4_path_unusable=nil
   end
   if state.phase=='prepared' or state.phase=='running' or state.phase=='cancelling' or state.phase=='quarantined' then return false,'prior attempt not confirmed inactive' end
   local actor,e,reused
@@ -373,6 +405,37 @@ function M.new(H,log,state)
   return true,{variant='ordinary_asm',player=s.player_id,volume=e.volume,attempt_id=e.attempt_id,height_m=e.height_m,
    end_world=e.end_world,end_relative_z=e.end_relative.Z,reused=reused,geometry_verified=true,
    move_direction=e.move_direction,actor_forward=e.actor_forward,direction_alignment=e.direction_alignment}
+ end
+ -- candidate5 keep-alive. A class that only this mod loaded is referenced by nothing and
+ -- is purged at the next garbage collection; every purge then costs a failed lookup and
+ -- a reload. One inactive owned volume references the class. It is spawned at most once
+ -- per player/world, only on proven grounded idle, far above the player, and silenced
+ -- exactly like the pooled volume of a hold run. The first hold run reuses it.
+ local function warm_pool()
+  local s,_,err=read_player();if not s then return false,err end
+  if not evidence_complete(s) or not s.ordinary_spec_found then return false,'lifecycle preflight incomplete' end
+  if s.all_special_active_count~=0 or not s.interact_clear or s.active_montage~='none' or s.mode~=1 then return false,'not grounded idle' end
+  if state.world~=s.world_id or state.player~=s.player_id then
+   state.pool={};state.world=s.world_id;state.player=s.player_id;state.volume=nil;state.phase=nil
+   state.perf4_path_unusable=nil
+  end
+  if state.phase=='prepared' or state.phase=='running' or state.phase=='cancelling' or state.phase=='quarantined' then return false,'attempt in progress' end
+  if #state.pool>0 then return false,'pool already has a volume' end
+  local p=H.GetPlayer();if not valid(p) or name(p)~=s.player_id then return false,'player mismatch' end
+  local e=nil
+  local ok,why=pcall(function()
+   local class=StaticFindObject(CLASS);assert(valid(class),'ordinary volume class not loaded')
+   local q=point(p:K2_GetActorLocation())
+   local actor=H.GetWorld():SpawnActor(class,{X=q.X,Y=q.Y,Z=q.Z+50000},{Pitch=0,Yaw=0,Roll=0});assert(valid(actor),'spawn failed')
+   e={volume=name(actor),phase='inactive',inactive_reason='keepalive_not_dispatched'};state.pool[#state.pool+1]=e
+   suppress(actor)
+  end)
+  if not ok then
+   if e then e.unsafe_setup=true end
+   emit('candidate5_keepalive failed='..tostring(why));return false,tostring(why)
+  end
+  emit('candidate5_keepalive volume='..e.volume..'; class stays referenced')
+  return true
  end
  local function start()
   local e=entry();if not e or e.phase~='prepared' then return false,'no prepared attempt' end
@@ -475,6 +538,7 @@ function M.new(H,log,state)
   local e=entry();if not e then return false,'no selected volume' end
   e.phase='quarantined';state.phase=e.phase;e.idle_count=0;emit('quarantine='..tostring(reason));return true
  end
- return {prepare=prepare,start=start,inspect=inspect,cancel=cancel,quarantine=quarantine,inspect_player=inspect_player,boost_finish_up=boost_finish_up,refresh_owned_ui=refresh_owned_ui}
+ return {prepare=prepare,start=start,inspect=inspect,cancel=cancel,quarantine=quarantine,inspect_player=inspect_player,boost_finish_up=boost_finish_up,refresh_owned_ui=refresh_owned_ui,
+  warm_pool=warm_pool}
 end
 return M

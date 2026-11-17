@@ -31,20 +31,23 @@ function M.new(H,log,shared)
  -- Later checks also require Space up and neither controller owning an action.
  -- All work remains on the existing game-thread host, never start_action.
  shared.asset_preloads_v18_3=shared.asset_preloads_v18_3 or {vertical={},side={}}
+ shared.asset_preloads_v18_3.short=shared.asset_preloads_v18_3.short or {}
  local preloads={}
  local init_ok,init_error=pcall(function()
   local Loader=module('parkour_asset_preload_v18_3.lua')
   local up=module('parkour_native_wallrun_v18_4.lua').new(H,log,{})
   preloads[1]=Loader.new(H,log,shared.asset_preloads_v18_3.vertical,up.inspect_player)
+  preloads[2]=Loader.new(H,log,shared.asset_preloads_v18_3.short,up.inspect_player,
+   {class_path=Loader.short_class_path})
   if cfg.side_enabled then
    local side_inspector=module('parkour_native_siderun_v18_1.lua').new(H,log,{})
-   preloads[2]=Loader.new(H,log,shared.asset_preloads_v18_3.side,side_inspector.inspect_player,
+   preloads[3]=Loader.new(H,log,shared.asset_preloads_v18_3.side,side_inspector.inspect_player,
     {class_path='/Game/RenewalContent/Actors/SpecialMove/BP_ASM_SideRunning.BP_ASM_SideRunning_C'})
   end
  end)
  if not init_ok then pcall(log,'v18_3_asset_loader_unavailable='..tostring(init_error)) end
  local last_asset_check,asset_identity,load_error_logged=nil,nil,false
- local function ensure_assets(context)
+ local function ensure_assets(context,now)
   -- Avoid an expensive failed class lookup while a nearby native interaction
   -- already forbids resource loading. No cached UObject or ready flag is used.
   local idle_ok,idle=pcall(function()
@@ -58,10 +61,20 @@ function M.new(H,log,shared)
    return true
   end)
   if not idle_ok or idle~=true then return end
-  for _,loader in ipairs(preloads) do
-   local ok,why=pcall(loader.ensure,context)
+  for index,loader in ipairs(preloads) do
+   local ok,why,detail=pcall(loader.ensure,context,now)
    if not ok and not load_error_logged then
     load_error_logged=true;pcall(log,'v18_3_asset_loader_error='..tostring(why))
+   end
+   -- candidate5 keep-alive: the hold-run class was just loaded by this mod on proven
+   -- grounded idle, so nothing in the map references it. Live logs show the engine
+   -- purging it within a second of the first load after arriving in a map, whether that
+   -- load ran at runtime construction or on the idle check. Attempted once per verified
+   -- load, never retried on its own; a failure only leaves the old reload behaviour.
+   if ok and index==1 and why==true and type(detail)=='table' and detail.loaded_now==true
+    and type(base.warm_long_pool)=='function' then
+    local called,warmed,reason=pcall(base.warm_long_pool)
+    if not called or warmed~=true then pcall(log,'candidate5_keepalive skipped='..tostring(called and reason or warmed)) end
    end
   end
  end
@@ -87,7 +100,7 @@ function M.new(H,log,shared)
    if current~=asset_identity then asset_identity=current;last_asset_check=nil end
    if enabled==true and space_down==false and s.mode==1 and not base.busy() and not Side.busy()
     and (not last_asset_check or s.time<last_asset_check or s.time-last_asset_check>=.5) then
-    last_asset_check=s.time;ensure_assets('enable_idle')
+    last_asset_check=s.time;ensure_assets('enable_idle',s.time)
    end
   end
   if diagnostics then
