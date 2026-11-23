@@ -137,13 +137,12 @@ function M.new(H,log,state)
      assert(read==count,'local widget enumeration incomplete')
     else
      -- K2_GetComponentsByClass returns a plain Lua object list on this build.
-     -- Validate its complete shape before reading any local-list component.
+     -- Validate indices first. Expired components are skipped by component().
      assert(type(all)=='table','unsupported local widget array representation')
      local count,max_index=0,0
-     for key,value in next,all do
+     for key in next,all do
       assert(type(key)=='number' and finite(key) and key>=1 and key%1==0 and key<=64,'local widget Lua list has unexpected key')
       count=count+1;assert(count<=64,'local widget Lua list exceeds bound')
-      assert(valid(value),'local widget Lua list contains invalid component')
       max_index=math.max(max_index,key)
      end
      assert(count==max_index,'local widget Lua list is sparse')
