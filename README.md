@@ -1,17 +1,21 @@
 # PBZ Free Parkour / 影之刃零自由跑酷
 
-**Current source / 当前源码：`0.1.0-beta-auto-perf4-pad1`**
+**Current source / 当前源码：`0.1.0-beta-auto-perf4-pad2`**
 
 - [Nexus Mods：下载与发布说明 / Downloads](https://www.nexusmods.com/phantombladezero/mods/1089)
-- [与 Nexus 一致的安装包 / Published ZIP](dist/PBZ_AutoExplore_0.1.0-beta-auto-perf4-pad1.zip) · [SHA-256](dist/PBZ_AutoExplore_0.1.0-beta-auto-perf4-pad1.zip.sha256)
+- [当前安装包 / Current ZIP](dist/PBZ_AutoExplore_0.1.0-beta-auto-perf4-pad2.zip) · [SHA-256](dist/PBZ_AutoExplore_0.1.0-beta-auto-perf4-pad2.zip.sha256)
 - [更新记录 / Changelog](CHANGELOG.md) · [源码使用权限 / Source permissions](PERMISSIONS.md)
-- [本版原始包内说明与清单 / Release documentation and manifest](docs/releases/0.1.0-beta-auto-perf4-pad1/)
+- [本版原始包内说明与清单 / Release documentation and manifest](docs/releases/0.1.0-beta-auto-perf4-pad2/)
 
-`Mods/` 的 41 个运行文件直接取自已发布 ZIP，逐字节核对一致。本次 GitHub 同步未修改游戏逻辑。旧按键版源码保留在 Git 历史，旧包位于 `dist/`；旧说明位于 `docs/release-snapshot/`，不适用于当前自动版。
+`Mods/` 的 41 个运行文件与本版 ZIP 逐字节一致。旧按键版源码保留在 Git 历史，旧包位于 `dist/`；旧说明位于 `docs/release-snapshot/`，不适用于当前自动版。
 
-The 41 runtime files in `Mods/` match the published ZIP byte for byte. This sync does not change gameplay code. The old hotkey source remains in Git history; its ZIP and documentation are retained separately. Install only the current `PBZFreeParkour` and `PBZAutoExplore` modules together, without the old duplicate modules.
+The 41 runtime files in `Mods/` match the current ZIP byte for byte. The old hotkey source remains in Git history; its ZIP and documentation are retained separately. Install only the current `PBZFreeParkour` and `PBZAutoExplore` modules together, without the old duplicate modules.
 
-## 自动生效优化测试版 — 0.1.0-beta-auto-perf4-pad1
+## 自动生效优化测试版 — 0.1.0-beta-auto-perf4-pad2
+
+### 本次更新
+
+修复连续蹬墙的界面扫描遇到失效组件时提前报错的问题。现在会跳过失效项，继续处理其余有效组件。实机验证覆盖溪谷读档、溪谷与西盟往返穿行、短按上翻和长按连蹬。测试期间未再出现该断言，原报告的闪退原因仍待确认。
 
 ### 基础功能与快速上手
 
@@ -73,7 +77,7 @@ https://www.nexusmods.com/phantombladezero/mods/13
 
 ### 详细优化内容
 
-这次更新主要减少了模组运行中的重复扫描、对象查找和资源加载，针对传送后连续蹬墙失效、反复出现周期性卡顿的问题进行了优化。部分场景的卡顿已有明显改善，但首次加载和地图流送仍可能产生短暂停顿。
+自动生效版减少了模组运行中的重复扫描、对象查找和资源加载，针对传送后连续蹬墙失效、反复出现周期性卡顿的问题进行了优化。部分场景的卡顿已有明显改善，但首次加载和地图流送仍可能产生短暂停顿。
 
 - 调整环境处理方式：首次分批处理已加载的空气墙和即死区域，后续通过新对象加载事件补充处理，减少周期性全图扫描。
 
@@ -100,7 +104,11 @@ UE4SS 由 UE4SS-RE 团队及贡献者开发，游戏适配包由 KintaroModding 
 ---
 ## English
 
-## Auto-Enabled Optimization Beta — 0.1.0-beta-auto-perf4-pad1
+## Auto-Enabled Optimization Beta — 0.1.0-beta-auto-perf4-pad2
+
+### In this update
+
+Fixed an assertion that stopped the wall-climb UI scan when it encountered an invalid widget component. The scan now skips invalid entries and continues through the remaining components. Tested in-game by loading a Xigu save, travelling between Xigu and Ximeng and back, and exercising both the tap wall flip and hold climb. The assertion did not recur during testing. The cause of the originally reported crash remains unconfirmed.
 
 ### Core features and quick start
 
@@ -162,7 +170,7 @@ Future work includes performance, continuous climbing and transitions over compl
 
 ### Detailed optimization changes
 
-This update reduces repeated scans, object lookups and resource loading. It targets periodic stutter and cases where continuous wall climbing stops working after travel. Stutter has improved in a reproduced scenario, but initial loading and level streaming can still cause brief pauses.
+The automatic edition reduces repeated scans, object lookups and resource loading. It targets periodic stutter and cases where continuous wall climbing stops working after travel. Stutter has improved in a reproduced scenario, but initial loading and level streaming can still cause brief pauses.
 
 - Environment processing: an initial batched pass handles loaded targets; new-object events supply later targets, reducing periodic full-world scans.
 

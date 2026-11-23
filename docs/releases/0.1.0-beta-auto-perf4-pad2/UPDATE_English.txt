@@ -1,0 +1,65 @@
+0.1.0-beta-auto-perf4-pad2
+
+This update fixes a widget error in the upward wall-climb script. If a component list still contains an invalid widget component after loading a save or changing areas, the script skips that entry and continues processing the valid components.
+
+All 35 existing UI regression groups and the new invalid-component regression passed. In game, the script encountered and skipped invalid entries twice, on loading the save and on returning from Ximeng to Xigu. The original assertion did not recur. After the round trip, the tap wall kick and held climb both ran with scripted jump input and returned to normal walking. No crash occurred in these tests. The cause of the reported crash remains unconfirmed.
+
+Previous update:
+Auto-Enabled Optimization Beta — 0.1.0-beta-auto-perf4-pad1
+
+This update reduces repeated scans, object lookups and resource loading. It targets periodic stutter and cases where continuous wall climbing stops working after travel. Stutter has improved in a reproduced scenario, but initial loading and level streaming can still cause brief pauses.
+
+Features enabled automatically after installation
+
+• Free parkour: single wall kick/flip and continuous upward wall climbing.
+• Invisible-wall removal: disables blocking by recognized invisible barriers.
+• Instant-death-zone disabling: disables loaded, explicitly identified GE_Kill zones. This is not immunity to every death mechanic.
+• No Traversing Talisman consumption: you must already own the item; the mod does not grant it.
+
+No F7, F8 or F9 activation is needed. Environment changes are processed in batches; allow a few seconds after loading a save or teleporting. This automatic edition does not include the F6 zone-wireframe display.
+
+Installation and use
+
+1. Fully exit the game, back up your save, and install the UE4SS for Phantom Blade Zero prerequisite:
+https://www.nexusmods.com/phantombladezero/mods/13
+2. Back up and move out old PBZFreeParkour and PBZAutoExplore folders. Remove or disable old PBZNoSplineWall, PBZNearbyKillToggle and other scripts providing the same features.
+3. Copy PBZFreeParkour and PBZAutoExplore from this archive's Mods folder into:
+Game directory\platform\steam\ue4ss\Mods\
+Correct example: platform\steam\ue4ss\Mods\PBZFreeParkour\Scripts\main.lua
+Both modules include enabled.txt. Do not add an extra Mods folder level. Keep the prerequisite's Mods\shared folder and do not overwrite your own mods.txt. If mods.txt explicitly disables either module, adjust those entries accordingly.
+4. Start the game and load your save. Features activate automatically. Do not combine this build with the old Full/Lite editions or other scripts providing the same features. UE4SS is not bundled.
+
+Default parkour input is keyboard Space or the bottom gamepad face button—Xbox A / PlayStation Cross:
+• Jump toward a solid wall, then press jump again. Tap the second press for a single wall kick/flip.
+• Hold the second press for continuous upward wall climbing; release to end it.
+• Buffered second presses before wall contact and tolerance for angled contact remain supported.
+
+Both moves reuse original game animations. Continuous climbing uses the native special pillar-running sequence. Near a ledge or protrusion, forward probes and landing/path checks attempt to transition to the original hand-assisted vault. The tap/hold threshold is approximately 0.18 seconds; allow roughly four seconds after landing before trying again. Complex overhangs are not guaranteed to work, and occasional excessive upward movement remains possible. Horizontal wall running is still excluded because suitable locations were limited and exit-related floating/launching bugs occurred.
+
+Rebind the mod's jump input in PBZFreeParkour\Scripts\input_bindings.lua. Defaults: keyboard_jump = 'SpaceBar' and gamepad_jump = 'Gamepad_FaceButton_Bottom'. Fully restart after editing and match the game's or Steam Input's jump binding. The mod does not automatically synchronize with in-game rebinding. Keyboard and controller can be mixed.
+
+Controller support passed 26 offline checks but has not been tested with physical controller hardware. Reports with controller model, connection type and observed behavior are welcome. The complete inventory-use flow for the no-consumption Traversing Talisman feature also remains to be retested.
+
+This automatic edition has no in-session feature-disable or collision-restoration hotkeys. To restore vanilla behavior, return to reliable solid ground, fully exit the game, disable or remove PBZFreeParkour and PBZAutoExplore, and restart. The legacy hotkey build in Old files and the old Lite build in Optional files are separate editions: do not install them together with this one. Their controls are documented in their own archives.
+
+This remains an experimental exploration mod. It does not add missing scene collision. Many visible surfaces have no physical collision, so you can still fall through scenery, go out of bounds, get stuck or interfere with quest progression. Other barrier types, death mechanics and complex surfaces are not all covered. The archive includes the complete Lua source; community work to identify and repair missing scene collision is welcome.
+
+Future work includes performance, continuous climbing and transitions over complex geometry, plus exploring plunging attacks/aerial executions against normal enemies after climbing. Those additional combat moves are not implemented yet.
+
+Detailed optimization changes
+
+• Environment processing: an initial batched pass handles loaded targets; new-object events supply later targets, reducing periodic full-world scans.
+• No restoration queue: the automatic edition no longer maintains the collision-restoration records needed by manual feature toggles.
+• Fewer repeated lookups: reuse validated player, world and component information, with revalidation after travel or player changes.
+• Fewer unnecessary collision queries: reduce grounded wall scans without a jump request while retaining jump, airborne-buffer and active-climb checks.
+• Improved parkour resource management: reduce repeated failed lookups and reloads after upward-climbing resources are garbage-collected, and address some post-travel climbing failures.
+• Spaced failure retries: progressively wait longer after persistent loading failures instead of repeatedly performing expensive failed lookups.
+• Bounded controller-input work: reuse the existing input loop and cache jump-key values; no extra world scans or collision probes are added.
+
+Supported barriers are BP_SplineWall objects and hidden basic Cube objects matching Profile_LA_InvisibleWall. The mod does not delete map assets or remove ordinary visible-model collision. Changes affect the Pawn channel and can also affect enemies/NPCs. Death-zone handling targets identified GE_Kill volumes, not every scripted death, KillZ rule or fall-damage source.
+
+In one reproduced post-travel periodic-stutter scenario on the test machine, frames above 20 ms fell from 404 to 0 over approximately 206 seconds, and P99 frame time improved from 31.61 ms to 9.22 ms. These measurements belong to the performance build before the controller patch and apply to that failure scenario; they are not a promise of the same improvement on every PC or map. One initial loader call still took about 55 ms before the stationary capture began. Live FPS has not been remeasured for the controller patch.
+
+Credits and source
+UE4SS is developed by the UE4SS-RE team and contributors; the game-specific package is published by KintaroModding. Mod code and documentation were developed with generative AI assistance, player direction and gameplay feedback. No UE4SS binaries, DLLs or game animation assets are included. The Lua files in this download are the source for this update.
+Project repository: https://github.com/scz03z22/phantom-blade-zero-free-parkour

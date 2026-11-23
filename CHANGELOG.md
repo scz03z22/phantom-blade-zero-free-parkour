@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta-auto-perf4-pad2 — 2026-11-24
+
+修复连续蹬墙的界面扫描遇到失效组件时提前报错的问题。现在会跳过失效项，继续处理其余有效组件。实机验证覆盖溪谷读档、溪谷与西盟往返穿行、短按上翻和长按连蹬。测试期间未再出现该断言，原报告的闪退原因仍待确认。
+
+Fixed an assertion that stopped the wall-climb UI scan when it encountered an invalid widget component. The scan now skips invalid entries and continues through the remaining components. Tested in-game by loading a Xigu save, travelling between Xigu and Ximeng and back, and exercising both the tap wall flip and hold climb. The assertion did not recur during testing. The cause of the originally reported crash remains unconfirmed.
+
 ## 0.1.0-beta-auto-perf4-pad1
 
 - Add keyboard OR gamepad jump input. Defaults: Space and Gamepad_FaceButton_Bottom (Xbox A / PlayStation Cross).
